@@ -42,15 +42,39 @@ func (p Proxy) URL() *url.URL {
 // Label is a stable, credential-free identifier for display.
 func (p Proxy) Label() string { return p.Scheme + "://" + p.HostPort() }
 
+// validScheme reports whether s is a syntactically valid URL scheme token:
+// a letter followed by letters, digits, '+', '-', or '.'. It can therefore
+// never contain ':' or '@', so text matching it cannot carry userinfo.
+func validScheme(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		isAlpha := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+		if i == 0 {
+			if !isAlpha {
+				return false
+			}
+			continue
+		}
+		isDigit := c >= '0' && c <= '9'
+		if !isAlpha && !isDigit && c != '+' && c != '-' && c != '.' {
+			return false
+		}
+	}
+	return true
+}
+
 // redact removes any credentials from an entry so it is safe to put in an error
-// or log string. It keeps scheme/host:port where it can, and never emits a
-// password. Unparseable input collapses to a generic placeholder.
+// or log string. It keeps scheme/host:port only when the scheme is a valid
+// token, and never emits a password. Anything else collapses to a placeholder.
 func redact(raw string) string {
-	if strings.Contains(raw, "://") {
-		if u, err := url.Parse(raw); err == nil && u.Host != "" {
+	if i := strings.Index(raw, "://"); i >= 0 {
+		if u, err := url.Parse(raw); err == nil && u.Host != "" && validScheme(u.Scheme) {
 			return u.Scheme + "://" + u.Host
 		}
-		if i := strings.Index(raw, "://"); i >= 0 {
+		if validScheme(raw[:i]) {
 			return raw[:i] + "://<redacted>"
 		}
 		return "<redacted>"
@@ -69,7 +93,10 @@ func Parse(line, defaultScheme string) (Proxy, error) {
 	if raw == "" {
 		return Proxy{}, fmt.Errorf("empty entry")
 	}
-	if strings.Contains(raw, "://") {
+	if i := strings.Index(raw, "://"); i >= 0 {
+		if !validScheme(raw[:i]) {
+			return Proxy{}, fmt.Errorf("invalid proxy entry %q", redact(raw))
+		}
 		return parseURL(raw)
 	}
 	return parseBare(raw, defaultScheme)

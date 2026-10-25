@@ -86,15 +86,46 @@ func TestErrorsRedactCredentials(t *testing.T) {
 
 func TestRedact(t *testing.T) {
 	cases := map[string]string{
-		"socks5://u:p@h:1080":  "socks5://h:1080",
-		"http://10.0.0.1:3128": "http://10.0.0.1:3128",
-		"1.2.3.4:8080:u:p":     "1.2.3.4:8080",
-		"1.2.3.4:8080":         "1.2.3.4:8080",
+		"socks5://u:p@h:1080":       "socks5://h:1080",
+		"http://10.0.0.1:3128":      "http://10.0.0.1:3128",
+		"1.2.3.4:8080:u:p":          "1.2.3.4:8080",
+		"1.2.3.4:8080":              "1.2.3.4:8080",
+		"user:SECRETPW://host:1080": "<redacted>", // creds before "://": no valid scheme
+		"user:SECRETPW@evil://h":    "<redacted>",
+		"  ://whatever":             "<redacted>",
 	}
 	for in, want := range cases {
 		if got := redact(in); got != want {
 			t.Fatalf("redact(%q) = %q, want %q", in, got, want)
 		}
+		if strings.Contains(redact(in), "SECRETPW") {
+			t.Fatalf("redact(%q) leaked a credential", in)
+		}
+	}
+}
+
+func TestValidScheme(t *testing.T) {
+	ok := []string{"http", "https", "socks5", "socks5h", "a", "a+b-c.d"}
+	bad := []string{"", "1http", "user:pass", "a@b", "ht tp", "a:b"}
+	for _, s := range ok {
+		if !validScheme(s) {
+			t.Fatalf("validScheme(%q) = false, want true", s)
+		}
+	}
+	for _, s := range bad {
+		if validScheme(s) {
+			t.Fatalf("validScheme(%q) = true, want false", s)
+		}
+	}
+}
+
+func TestParseMalformedSchemeRedacts(t *testing.T) {
+	_, err := Parse("user:SECRETPW://host:1080", "http")
+	if err == nil {
+		t.Fatal("expected error for creds-before-scheme entry")
+	}
+	if strings.Contains(err.Error(), "SECRETPW") {
+		t.Fatalf("error leaked credential: %v", err)
 	}
 }
 
