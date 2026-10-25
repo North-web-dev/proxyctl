@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -183,6 +184,43 @@ func TestRunDeadProxy(t *testing.T) {
 	}
 	if r.Error == "" {
 		t.Fatalf("expected an error message on a dead proxy")
+	}
+}
+
+func TestSanitizeStripsControlChars(t *testing.T) {
+	in := "1.2.3.4\r\nSet-Cookie: evil\x00\x07"
+	got := sanitize(in)
+	if got != "1.2.3.4Set-Cookie: evil" {
+		t.Fatalf("sanitize = %q", got)
+	}
+}
+
+func TestGeoCheckRejectsInvalidIP(t *testing.T) {
+	o := Options{GeoURL: "http://geo.invalid/{ip}", Timeout: time.Second}
+	if got := geoCheck(context.Background(), o, "not-an-ip\r\nHost: x"); got != "not checked (no valid exit IP)" {
+		t.Fatalf("geoCheck with bad IP = %q", got)
+	}
+}
+
+func TestGeoCheckOffByDefault(t *testing.T) {
+	if got := geoCheck(context.Background(), Options{}, "1.2.3.4"); got != "not checked" {
+		t.Fatalf("geoCheck default = %q", got)
+	}
+}
+
+func TestGeoCheckEscapesIP(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		io.WriteString(w, "AS1 Example")
+	}))
+	defer srv.Close()
+	o := Options{GeoURL: srv.URL + "/{ip}", Timeout: 3 * time.Second}
+	if got := geoCheck(context.Background(), o, "8.8.8.8"); got != "AS1 Example" {
+		t.Fatalf("geoCheck body = %q", got)
+	}
+	if gotPath != "/8.8.8.8" {
+		t.Fatalf("geo path = %q", gotPath)
 	}
 }
 

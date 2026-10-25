@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -161,12 +162,13 @@ func cmdCheck(args []string, filter bool) error {
 func cmdRotate(args []string) error {
 	fs := newFlagSet("rotate")
 	var (
-		addr      = fs.String("addr", ":8080", "local listen address for the rotating proxy")
+		addr      = fs.String("addr", "127.0.0.1:8080", "local listen address for the rotating proxy")
 		strategy  = fs.String("strategy", "round-robin", "round-robin | random | least-latency")
 		probeHost = fs.String("probe-host", "example.com:443", "host:port used for upstream health checks")
 		timeout   = fs.Duration("timeout", 15*time.Second, "per-request / per-probe timeout")
 		interval  = fs.Duration("health-interval", 30*time.Second, "health re-check interval")
 		defScheme = fs.String("default-scheme", "http", "scheme for bare host:port entries")
+		auth      = fs.String("auth", "", "require client Proxy-Authorization as user:pass (Basic)")
 		quiet     = fs.Bool("quiet", false, "do not log each forwarded request")
 	)
 	path, err := parsePositional(fs, args)
@@ -184,16 +186,33 @@ func cmdRotate(args []string) error {
 		return fmt.Errorf("no valid upstream proxies")
 	}
 
+	authHeader := ""
+	if *auth != "" {
+		user, pass, ok := strings.Cut(*auth, ":")
+		if !ok {
+			return fmt.Errorf("--auth must be user:pass")
+		}
+		authHeader = "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
+	}
+	if !rotate.IsLoopbackAddr(*addr) && authHeader == "" {
+		return fmt.Errorf("refusing to bind non-loopback address %q as an open proxy; "+
+			"set --auth user:pass to require client authentication, or bind a loopback address", *addr)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	pool := rotate.NewPool(proxies, rotate.Strategy(*strategy), *probeHost, *timeout)
 	pool.Run(ctx, *interval)
 	st := pool.Stats()
-	fmt.Fprintf(os.Stderr, "proxyctl rotate: %d upstreams, %d healthy, strategy=%s, listening on %s\n",
-		st.Total, st.Healthy, *strategy, *addr)
+	authNote := "no client auth"
+	if authHeader != "" {
+		authNote = "client auth required"
+	}
+	fmt.Fprintf(os.Stderr, "proxyctl rotate: %d upstreams, %d healthy, strategy=%s, %s, listening on %s\n",
+		st.Total, st.Healthy, *strategy, authNote, *addr)
 
-	srv := &rotate.Server{Pool: pool, Timeout: *timeout}
+	srv := &rotate.Server{Pool: pool, Timeout: *timeout, Auth: authHeader}
 	if !*quiet {
 		srv.Log = func(f string, a ...any) { fmt.Fprintf(os.Stderr, "  "+f+"\n", a...) }
 	}

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -130,7 +131,7 @@ func Run(ctx context.Context, p proxyspec.Proxy, o Options) Result {
 		r.LatencyMS = median(samples)
 	}
 	if echo != nil {
-		r.ExitIP = echo.Origin
+		r.ExitIP = sanitize(echo.Origin)
 		level, _ := classifyAnonymity(echo.Headers, echo.Origin, realIP)
 		r.Anonymity = level
 	}
@@ -281,16 +282,33 @@ func geoCheck(ctx context.Context, o Options, exitIP string) string {
 	if o.GeoURL == "" {
 		return "not checked"
 	}
-	if exitIP == "" {
-		return "not checked (no exit IP)"
+	ip := net.ParseIP(exitIP)
+	if ip == nil {
+		return "not checked (no valid exit IP)"
 	}
-	url := strings.ReplaceAll(o.GeoURL, "{ip}", exitIP)
+	target := strings.ReplaceAll(o.GeoURL, "{ip}", url.PathEscape(ip.String()))
 	c := &http.Client{Timeout: o.Timeout}
-	_, body, err := doGet(ctx, c, url)
+	_, body, err := doGet(ctx, c, target)
 	if err != nil {
-		return "not checked (geo endpoint error: " + short(err) + ")"
+		return "not checked (geo endpoint error: " + sanitize(short(err)) + ")"
 	}
-	return strings.TrimSpace(string(body))
+	return sanitize(string(body))
+}
+
+// sanitize strips CR/LF and non-printable characters from any echo- or
+// geo-derived string before it is printed or placed in JSON, and caps length.
+func sanitize(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
+	s = strings.TrimSpace(s)
+	if len(s) > 256 {
+		return s[:256]
+	}
+	return s
 }
 
 // tlsThrough tunnels to hostPort and completes a TLS handshake using the host

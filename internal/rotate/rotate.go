@@ -7,6 +7,7 @@ package rotate
 import (
 	"bufio"
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"io"
 	"math/rand"
@@ -14,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -207,7 +209,10 @@ func (p *Pool) Stats() Stats {
 type Server struct {
 	Pool    *Pool
 	Timeout time.Duration
-	Log     func(string, ...any)
+	// Auth, if set, is the exact Proxy-Authorization value a client must send
+	// (e.g. "Basic <base64(user:pass)>"). Empty means no client auth.
+	Auth string
+	Log  func(string, ...any)
 }
 
 func (s *Server) logf(format string, a ...any) {
@@ -216,8 +221,20 @@ func (s *Server) logf(format string, a ...any) {
 	}
 }
 
+func (s *Server) authOK(r *http.Request) bool {
+	if s.Auth == "" {
+		return true
+	}
+	return subtle.ConstantTimeCompare([]byte(r.Header.Get("Proxy-Authorization")), []byte(s.Auth)) == 1
+}
+
 // ServeHTTP implements the forward proxy for HTTP and CONNECT.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !s.authOK(r) {
+		w.Header().Set("Proxy-Authenticate", `Basic realm="proxyctl"`)
+		http.Error(w, "proxy authentication required", http.StatusProxyAuthRequired)
+		return
+	}
 	if r.Method == http.MethodConnect {
 		s.handleConnect(w, r)
 		return
@@ -340,6 +357,20 @@ func stripHopByHop(h http.Header) {
 	for _, k := range hopByHop {
 		h.Del(k)
 	}
+}
+
+// IsLoopbackAddr reports whether a listen address binds only to loopback. A
+// missing or empty host (e.g. ":8080") binds all interfaces and is not
+// loopback. Unresolvable hosts are treated as non-loopback (fail safe).
+func IsLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil || host == "" {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return strings.EqualFold(host, "localhost")
 }
 
 func (s *Server) ListenAndServe(ctx context.Context, addr string) error {

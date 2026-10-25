@@ -1,6 +1,9 @@
 package proxyspec
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParse(t *testing.T) {
 	tests := []struct {
@@ -61,6 +64,37 @@ func TestParseList(t *testing.T) {
 	}
 	if got[0].Label() != "http://1.1.1.1:8080" || got[1].Label() != "socks5://2.2.2.2:1080" {
 		t.Fatalf("unexpected labels: %q %q", got[0].Label(), got[1].Label())
+	}
+}
+
+func TestErrorsRedactCredentials(t *testing.T) {
+	cases := []string{
+		"socks5://user:SECRETPW@host:notaport",
+		"gopher://user:SECRETPW@host:1080",
+		"1.2.3.4:badport:user:SECRETPW",
+	}
+	for _, in := range cases {
+		_, err := Parse(in, "http")
+		if err == nil {
+			t.Fatalf("%q: expected error", in)
+		}
+		if strings.Contains(err.Error(), "SECRETPW") {
+			t.Fatalf("%q: error leaked password: %v", in, err)
+		}
+	}
+}
+
+func TestRedact(t *testing.T) {
+	cases := map[string]string{
+		"socks5://u:p@h:1080":  "socks5://h:1080",
+		"http://10.0.0.1:3128": "http://10.0.0.1:3128",
+		"1.2.3.4:8080:u:p":     "1.2.3.4:8080",
+		"1.2.3.4:8080":         "1.2.3.4:8080",
+	}
+	for in, want := range cases {
+		if got := redact(in); got != want {
+			t.Fatalf("redact(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

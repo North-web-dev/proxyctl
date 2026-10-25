@@ -147,6 +147,55 @@ func TestForwardNoHealthyReturns503(t *testing.T) {
 	}
 }
 
+func TestIsLoopbackAddr(t *testing.T) {
+	cases := map[string]bool{
+		"127.0.0.1:8080": true,
+		"localhost:8080": true,
+		"[::1]:8080":     true,
+		":8080":          false,
+		"0.0.0.0:8080":   false,
+		"192.168.1.5:80": false,
+		"garbage":        false,
+	}
+	for in, want := range cases {
+		if got := IsLoopbackAddr(in); got != want {
+			t.Fatalf("IsLoopbackAddr(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestClientAuthEnforced(t *testing.T) {
+	pool := dummyPool(1, RoundRobin)
+	pool.setHealth(pool.ups[0], true, 10)
+	srv := &Server{Pool: pool, Timeout: time.Second, Auth: "Basic dXNlcjpwYXNz"} // user:pass
+	rotator := httptest.NewServer(srv)
+	defer rotator.Close()
+
+	proxyURL, _ := url.Parse(rotator.URL)
+
+	noAuth := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}, Timeout: 3 * time.Second}
+	resp, err := noAuth.Get("http://example.invalid/")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusProxyAuthRequired {
+		t.Fatalf("without credentials status = %d, want 407", resp.StatusCode)
+	}
+
+	authURL, _ := url.Parse("http://user:pass@" + proxyURL.Host)
+	withAuth := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(authURL)}, Timeout: 3 * time.Second}
+	resp2, err := withAuth.Get("http://example.invalid/")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer resp2.Body.Close()
+	// Auth passes, so it proceeds to upstream selection (502, not 407).
+	if resp2.StatusCode == http.StatusProxyAuthRequired {
+		t.Fatalf("valid credentials still rejected with 407")
+	}
+}
+
 func mustHost(t *testing.T, s string) string {
 	u, err := url.Parse(s)
 	if err != nil {

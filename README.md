@@ -179,20 +179,27 @@ proxyctl rotate: 5 upstreams, 4 healthy, strategy=round-robin, listening on 127.
 ```
 
 ```
---addr H:P             local listen address                         [:8080]
+--addr H:P             local listen address                         [127.0.0.1:8080]
 --strategy S           round-robin | random | least-latency         [round-robin]
 --probe-host H:P       host:port used for upstream health checks     [example.com:443]
 --timeout DUR          per-request / per-probe timeout               [15s]
 --health-interval DUR  background re-check interval                  [30s]
+--auth user:pass       require client Proxy-Authorization (Basic)    [off]
 --default-scheme S     scheme for bare host:port entries             [http]
 --quiet                do not log each forwarded request
 ```
 
+**Not an open proxy.** The listener defaults to `127.0.0.1` and `proxyctl`
+**refuses to bind a non-loopback address unless `--auth` is set** — an
+unauthenticated proxy on a public interface is an abuse magnet. With `--auth`,
+clients must send `Proxy-Authorization: Basic …`; mismatches get `407` and the
+credential compare is constant-time.
+
 Scope, honestly: it chooses one upstream per client request, supports HTTP and
 HTTPS (via `CONNECT`), and ejects an upstream after repeated failures. It is a
-*rotator*, not a full proxy server — no auth, no TLS on the listener (keep it on
-localhost or behind a reverse proxy), and HTTP forwarding uses one upstream
-connection per request.
+*rotator*, not a full proxy server — client auth is a single shared Basic
+credential, there is no TLS on the listener (keep it on localhost or behind a
+reverse proxy), and HTTP forwarding uses one upstream connection per request.
 
 ## Scoring
 
@@ -231,7 +238,9 @@ lacks UDP scores 85. The weights and the 100 ms/3000 ms latency bounds live in
   when dialing (`socks5h` sends the hostname to the proxy; `socks5` resolves
   locally). It is not an independent leak test.
 - **Geo/ASN is optional and never fabricated.** Without `--geo-url` the field is
-  `not checked`.
+  `not checked`. The exit IP is validated with `net.ParseIP` and URL-escaped
+  before it is substituted into `{ip}`, and every echo-/geo-derived string is
+  stripped of control characters before being printed or placed in JSON.
 - **UDP probe** confirms `ASSOCIATE` and that *a* datagram is relayed; it does
   not benchmark throughput or NAT behavior.
 - **Credentials** are read from the list and held in memory; this is not a
